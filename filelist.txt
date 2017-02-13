@@ -1,2 +1,13 @@
-/;r
-*.tmp;i
+./;r
+typo3conf/l10n/.*.xlf$;i
+typo3conf/l10n/.*.xml$;i
+typo3conf/l10n/.*.zip$;i
+typo3conf/ext/mkphpids/IDS/tmp/PHPIDS_Log_Email_.*.tmp$;i
+fileadmin/.*;i
+uploads/.*;i
+piwik/tmp/sessions/sess_.*;i
+piwik/tmp/cache/tracker/piwikcache_.*\.php$;i
+piwik/tmp/cache/tracker/eagercache-.*\.php$;i
+piwik/tmp/templates_c/.*;i
+piwik/tmp/assets/.*;i
+typo3temp/.*$;i

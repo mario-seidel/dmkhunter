@@ -31,7 +31,7 @@ var (
 
 type Md5Info struct {
 	filepath string
-	hash string
+	hash chan string
 }
 
 type Md5List []*Md5Info
@@ -41,8 +41,8 @@ type MyFileinfo struct {
 }
 
 func main() {
-	cpuUse := runtime.NumCPU()
 	//use half CPUs
+	cpuUse := runtime.NumCPU()
 	runtime.GOMAXPROCS(cpuUse)
 	fmt.Println("run on cpu count: ", cpuUse)
 
@@ -78,11 +78,27 @@ func startScan(rootPath string) {
 		if f != "*" {
 			path += "/" +f
 		}
-		mdChan := scanPath(path)
+
+		mdChan := scanPath(path, &ignores)
 		saveToFile(VARDIR + "/newstamp.dat", mdChan)
+
 	}
 
 	//saveToFile(VARDIR + "/newstamp.dat", files)
+}
+
+func isPathAllowed(path string, patterns *[]string) bool {
+	for _, pattern := range *patterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if re.MatchString(path) {
+			//log.Printf("%s is not: %s", path, pattern)
+			return false
+		}
+	}
+	return true
 }
 
 //reads a filelist and start scanning all files recursive
@@ -145,25 +161,35 @@ func splitFileList(filePath string, files chan string, ignores chan string, quit
 	}
 }
 
-func scanPath(path string) <- chan *Md5Info {
+func scanPath(path string, ignores *[]string) <- chan *Md5Info {
 	//var md5List = Md5List{}
 	out := make(chan *Md5Info)
 
 	go func(out chan<- *Md5Info) {
 		defer close(out)
-		c := make(chan string)
 		filepath.Walk(path, func(path string, f os.FileInfo, err error) error {
 
 			if err != nil {
 				log.Fatal(err)
 			}
-			//fileList = append(fileList, path)
-			fileI := MyFileinfo{f}
-			if !f.IsDir() && !fileI.isSymlink() {
-				go hashfile(path, f, c)
-				out <- &Md5Info{filepath:path, hash: <-c}
+			c := make(chan string)
+			if isPathAllowed(path, ignores) {
+				fileI := MyFileinfo{f}
+				if !f.IsDir() && !fileI.isSymlink() {
+					//useless go routine TODO: make it concurrent
+					c := make(chan string)
+					go hashfile(path, f, c)
+					out <- &Md5Info{filepath:path, hash: c}
+				}
+			} else {
+					//log.Printf("%s is not allowed skip dir %s", path, ignores)
+				//should we skip is ignore pattern match?
+				//if f.IsDir() {
+				//	return filepath.SkipDir
+				//}
+				out <- &Md5Info{filepath:"", hash: c}
 			}
-			out <- &Md5Info{filepath:"", hash:""}
+
 			return nil
 		})
 	}(out)
@@ -212,11 +238,11 @@ func appendFile(filePath string, text string) {
 //saves a map to a file
 func saveToFile(filePath string, data <-chan *Md5Info) {
 	for info := range data {
-		if (*info).hash != "" {
+		if fileHash := <-(*info).hash; fileHash != "" {
 			if *debug {
-				log.Println("Key:", (*info).hash, "Value:", (*info).filepath)
+				log.Println("Key:", fileHash, "Value:", (*info).filepath)
 			}
-			appendFile(filePath, (*info).filepath + ":" + (*info).hash)
+			appendFile(filePath, (*info).filepath + ":" + fileHash)
 		}
 	}
 }
