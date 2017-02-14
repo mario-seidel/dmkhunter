@@ -147,7 +147,7 @@ func splitFileList(filePath string, files chan string, ignores chan string, quit
 	re := regexp.MustCompile("(.+);.*i")
 	matchedIgnores := re.FindStringSubmatch(filePath)
 
-	reFiles := regexp.MustCompile("(.+)(;.*r)?")
+	reFiles := regexp.MustCompile("(.+)(;.*r?)")
 	matchedFiles := reFiles.FindStringSubmatch(filePath)
 
 	switch {
