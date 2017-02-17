@@ -17,9 +17,9 @@ func TestScanPath(t *testing.T) {
 		t.Errorf("ignores should be empty %T", ignores)
 	}
 
-	for key, val := range list {
+	for _, val := range list {
 		if !strings.HasSuffix(val, "/fixture_filelist.txt") {
-			t.Errorf("file is not in list %s", key)
+			t.Errorf("file is not in list %s", val)
 		}
 		break
 	}

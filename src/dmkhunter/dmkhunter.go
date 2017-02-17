@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"regexp"
+	"strings"
 )
 
 const VERSION = "0.0.5"
@@ -29,8 +30,11 @@ var (
 	debug = kingpin.Flag("debug", "set debug mode").Short('d').Default("false").Bool()
 )
 
+var hashCount int = 0
+
 type Md5Info struct {
 	filepath string
+	filesize int64
 	hash chan string
 }
 
@@ -42,7 +46,7 @@ type MyFileinfo struct {
 
 func main() {
 	//use half CPUs
-	cpuUse := runtime.NumCPU()
+	cpuUse := runtime.NumCPU() / s
 	runtime.GOMAXPROCS(cpuUse)
 	fmt.Println("run on cpu count: ", cpuUse)
 
@@ -81,7 +85,6 @@ func startScan(rootPath string) {
 
 		mdChan := scanPath(path, &ignores)
 		saveToFile(VARDIR + "/newstamp.dat", mdChan)
-
 	}
 
 	//saveToFile(VARDIR + "/newstamp.dat", files)
@@ -112,13 +115,14 @@ func checkFilelist(filename string) ([]string, []string) {
 	scanner := bufio.NewScanner(file)
 	fileChan := make(chan string)
 	ignoreChan := make(chan string)
-	quitChan := make(chan int)
 
 	fileCount := 0
 	for scanner.Scan() {
-		fileCount++
 		scanFilePath := scanner.Text()
-		go splitFileList(scanFilePath, fileChan, ignoreChan, quitChan)
+		if !strings.HasPrefix("#", scanFilePath) {
+			fileCount++
+			go splitFileList(scanFilePath, fileChan, ignoreChan)
+		}
 	}
 
 	for j := 0; j < fileCount; {
@@ -138,7 +142,7 @@ func checkFilelist(filename string) ([]string, []string) {
 }
 
 //split filelist in files to scan and files to ignore
-func splitFileList(filePath string, files chan string, ignores chan string, quitChan chan int) {
+func splitFileList(filePath string, files chan string, ignores chan string) {
 	if (filePath == "") {
 		ignores <- ""
 		return
@@ -164,21 +168,20 @@ func scanPath(path string, ignores *[]string) <- chan *Md5Info {
 	//var md5List = Md5List{}
 	out := make(chan *Md5Info)
 
-	go func(out chan<- *Md5Info) {
+	go func() {
 		defer close(out)
 		filepath.Walk(path, func(path string, f os.FileInfo, err error) error {
 
 			if err != nil {
 				log.Fatal(err)
 			}
-			c := make(chan string)
+			hashChan := make(chan string)
 			if isPathAllowed(path, ignores) {
 				fileI := MyFileinfo{f}
 				if !f.IsDir() && !fileI.isSymlink() {
 					//useless go routine TODO: make it concurrent
-					c := make(chan string)
-					go hashfile(path, f, c)
-					out <- &Md5Info{filepath:path, hash: c}
+					go hashfile(path, f, hashChan)
+					out <- &Md5Info{filepath:path, filesize: fileI.Size(), hash: hashChan}
 				}
 			} else {
 					//log.Printf("%s is not allowed skip dir %s", path, ignores)
@@ -186,12 +189,12 @@ func scanPath(path string, ignores *[]string) <- chan *Md5Info {
 				//if f.IsDir() {
 				//	return filepath.SkipDir
 				//}
-				out <- &Md5Info{filepath:"", hash: c}
+				//out <- &Md5Info{filepath:"", hash: c}
 			}
 
 			return nil
 		})
-	}(out)
+	}()
 
 	return out
 }
@@ -223,25 +226,27 @@ func (f MyFileinfo) isSymlink() bool {
 }
 
 // append to a log file
-func appendFile(filePath string, text string) {
+func appendFile(filePath string, text *string) {
 	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0600)
 	check(err)
 
 	defer f.Close()
 
-	if _, err = f.WriteString(text + "\n"); err != nil {
+	if _, err = f.WriteString(*text + "\n"); err != nil {
 		panic(err)
 	}
 }
 
 //saves a map to a file
 func saveToFile(filePath string, data <-chan *Md5Info) {
+	var fileText string
 	for info := range data {
 		if fileHash := <-(*info).hash; fileHash != "" {
 			if *debug {
 				log.Println("Key:", fileHash, "Value:", (*info).filepath)
 			}
-			appendFile(filePath, (*info).filepath + ":" + fileHash)
+			fileText = fmt.Sprintf("%s:%d:%s", (*info).filepath, (*info).filesize, fileHash)
+			appendFile(filePath, &fileText)
 		}
 	}
 }
