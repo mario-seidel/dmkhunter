@@ -15,6 +15,7 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 	"regexp"
 	"strings"
+	"strconv"
 )
 
 const VERSION = "0.0.5"
@@ -44,9 +45,11 @@ type MyFileinfo struct {
 	os.FileInfo
 }
 
+var checkList Md5List
+
 func main() {
 	//use half CPUs
-	cpuUse := runtime.NumCPU() / s
+	cpuUse := runtime.NumCPU() / 2
 	runtime.GOMAXPROCS(cpuUse)
 	fmt.Println("run on cpu count: ", cpuUse)
 
@@ -74,7 +77,7 @@ func checkOptions() {
 func startScan(rootPath string) {
 	files, ignores := checkFilelist(*fileList)
 
-	fmt.Println(files, ignores)
+	checkList = readHashfile()
 	for _,f := range files {
 		path := rootPath
 
@@ -88,6 +91,37 @@ func startScan(rootPath string) {
 	}
 
 	//saveToFile(VARDIR + "/newstamp.dat", files)
+}
+
+func readHashfile() Md5List {
+	sf, err := os.Open(VARDIR + "/newstamp.dat")
+	if err != nil {
+		log.Println(err)
+	}
+	defer sf.Close()
+
+	scan := bufio.NewScanner(sf)
+	md5List := Md5List{}
+	var hashChan chan string
+
+	for scan.Scan() {
+		line := scan.Text()
+		s := strings.Split(line, ":")
+		path, size := s[0], s[1]
+
+		sizeByte, _ := strconv.ParseInt(size,10,64)
+		//log.Println(path, sizeByte, hashChan)
+
+		//hashChan
+		go func() {
+			hashChan <- s[2]
+		}()
+
+		fileInfo := Md5Info{filepath:path, filesize: sizeByte, hash: hashChan}
+		md5List = append(md5List, &fileInfo)
+	}
+
+	return md5List
 }
 
 func isPathAllowed(path string, patterns *[]string) bool {
@@ -241,6 +275,7 @@ func appendFile(filePath string, text *string) {
 func saveToFile(filePath string, data <-chan *Md5Info) {
 	var fileText string
 	for info := range data {
+		go isSameHash(info)
 		if fileHash := <-(*info).hash; fileHash != "" {
 			if *debug {
 				log.Println("Key:", fileHash, "Value:", (*info).filepath)
@@ -249,6 +284,20 @@ func saveToFile(filePath string, data <-chan *Md5Info) {
 			appendFile(filePath, &fileText)
 		}
 	}
+}
+
+func isSameHash(info *Md5Info) bool {
+
+	log.Println("got", info.filepath)
+	for _, i := range checkList {
+		if info.filepath == i.filepath {
+			//log.Println("found one", i.filepath)
+			log.Println(<-info.hash, <-i.hash)
+			return <-info.hash == <-i.hash
+		}
+	}
+	log.Fatal("not found", info.filepath)
+	return false
 }
 
 func buildIgnoreList() {
