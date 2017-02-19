@@ -32,6 +32,7 @@ const LOGROTATE_EXECUTABLE = "$( which logrotate 2> /dev/null )"
 var (
 	pathToScan = kingpin.Arg("path", "root path to scan").Required().String()
 	fileList = kingpin.Flag("file-list", "a list of files to scan for").Short('f').Required().String()
+	updateFlag = kingpin.Flag("update", "a list of files to scan for").Short('u').Bool()
 	debug = kingpin.Flag("debug", "set debug mode").Short('d').Default("false").Bool()
 )
 
@@ -73,10 +74,9 @@ func main() {
 	kingpin.Parse()
 
 	checkOptions()
-	rotateStampFiles(OLDSTAMPFILE, STAMPFILE)
 
 	//do the work
-	startScan(*pathToScan)
+	startScan(*pathToScan, *updateFlag)
 
 	stopTime := time.Since(startTime)
 	log.Printf("runtime: %s", stopTime)
@@ -89,22 +89,22 @@ func rotateStampFiles(oldStampFile string, stampFile string) {
 			log.Fatal("error remove " + oldStampFile)
 		}
 	}
-	//if _, err := os.Stat(stampFile); err == nil {
-	//	if fileErr := os.Rename(stampFile, oldStampFile); fileErr != nil {
-	//		log.Fatal("error move stamp to oldstamp")
-	//	}
-	//}
+	if _, err := os.Stat(stampFile); err == nil {
+		if fileErr := os.Rename(stampFile, oldStampFile); fileErr != nil {
+			log.Fatal("error move stamp to oldstamp")
+		}
+	}
 }
 
 //test if all parrameters given are correct
 func checkOptions() {
 	//check filelist exists
-	if _, err := os.Stat(*fileList); err != nil {
-		log.Fatal("scan path must be given")
+	if _, err := os.Stat(*pathToScan); err != nil {
+		log.Println("co scan path given")
 	}
 }
 
-func startScan(rootPath string) {
+func startScan(rootPath string, updateFile bool) {
 	files, ignores := checkFilelist(*fileList)
 
 	//read md5 hash list from channel (old stamp file)
@@ -137,7 +137,8 @@ func startScan(rootPath string) {
 
 		//var fileText string
 	}
-	if fileTextBuffer.Len() > 0 {
+	if updateFile == true && fileTextBuffer.Len() > 0 {
+		rotateStampFiles(OLDSTAMPFILE, STAMPFILE)
 		writeToFile(STAMPFILE, &fileTextBuffer)
 	}
 	//saveToFile(VARDIR + "/newstamp.dat", files)
@@ -160,6 +161,9 @@ func readHashfile() <- chan Md5List {
 		for scan.Scan() {
 			line := scan.Text()
 			s := strings.Split(line, ":")
+			if len(s) != 3 {
+				log.Fatal("could not read line from stamp file: ", line)
+			}
 			hashChan := make(chan string)
 			path, size, hash := s[0], s[1], s[2]
 
@@ -200,9 +204,12 @@ func checkFilelist(filename string) ([]ScanPath, []string) {
 
 	//open filelist
 	file, err := os.Open(filename)
-	check(err)
+	if err != nil {
+		log.Println("no filelist, scan all")
+		scanList = append(scanList, ScanPath{path:"", recursive: true})
+		return scanList, ignoreList
+	}
 	defer file.Close()
-
 	scanner := bufio.NewScanner(file)
 	fileChan := make(chan ScanPath)
 	ignoreChan := make(chan string)
@@ -346,7 +353,7 @@ func compareDir(data <-chan *Md5Info, compare *Md5List) <- chan CheckResult {
 	go func() {
 		defer close(checkResultChan)
 		for info := range data {
-			result, checkError := isSameHash(info, compare)
+			result, checkError := isFileIdentical(info, compare)
 
 			checkResultChan <- CheckResult{md5Info:info, result:result, err: checkError}
 		}
@@ -368,31 +375,41 @@ func writeToFile(filePath string, text *bytes.Buffer) {
 }
 
 // test if a md5 hash is in oldstamp an is correct
-// return a boolean if the hash is not the same an an error with description
-func isSameHash(info *Md5Info, compareList *Md5List) (bool, error) {
+// returns false if the hash or filesize is not the same an an error with description
+func isFileIdentical(info *Md5Info, compareList *Md5List) (bool, error) {
 
-	 fileHash := <-(*info).hash
-		//resend hash
-		go func() {
-			(*info).hash <- fileHash
-		}()
-		for _, i := range *compareList {
-			if info.filepath == i.filepath {
-				compareHash := <-i.hash
-				result := fileHash == compareHash
-				var checkError error
-				if !result {
-					checkError = errors.New("hash not the same " + (*info).filepath)
-				}
-				return result, checkError
-			}
+	fileHash := <-(*info).hash
+	//resend hash, because we need them later
+	go func() {
+		(*info).hash <- fileHash
+	}()
+
+	for _, i := range *compareList {
+		if info.filepath == i.filepath {
+			result := compareFileInfo(info, &fileHash, i)
+
+			return (result == nil), result
 		}
+	}
 
 	return false, errors.New("new file: " + (*info).filepath)
 }
 
-func help() {
-	fmt.Println("DMKHunter Version", VERSION)
+// compare to Md5Info structs and test hash and filesize
+// return error if not equal
+func compareFileInfo(info *Md5Info, fileHash *string, compare *Md5Info) (checkError error) {
+	compareHash := <-compare.hash
+
+	if info.filesize != compare.filesize {
+		checkError = errors.New("filesize is not the same " + (*info).filepath)
+		return
+	}
+
+	if *fileHash != compareHash {
+		checkError = errors.New("hash not the same " + (*info).filepath)
+	}
+
+	return
 }
 
 //check for an error
