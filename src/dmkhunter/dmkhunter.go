@@ -365,7 +365,9 @@ func compareDir(data <-chan *Md5Info, compare *Md5List) <- chan CheckResult {
 //saves a map to a file
 func writeToFile(filePath string, text *bytes.Buffer) {
 	f, err := os.OpenFile(filePath, os.O_RDWR | os.O_APPEND | os.O_CREATE, 0600)
-	check(err)
+	if err != nil {
+		log.Fatal("could not write file", err)
+	}
 
 	defer f.Close()
 
@@ -410,13 +412,6 @@ func compareFileInfo(info *Md5Info, fileHash *string, compare *Md5Info) (checkEr
 	}
 
 	return
-}
-
-//check for an error
-func check(err error) {
-	if err != nil {
-		log.Print(err)
-	}
 }
 
 
