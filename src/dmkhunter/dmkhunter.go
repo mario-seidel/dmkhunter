@@ -57,7 +57,7 @@ type ScanPath struct {
 
 type CheckResult struct {
 	md5Info *Md5Info
-	result  bool
+	equal   bool
 	err     error
 }
 
@@ -100,7 +100,7 @@ func rotateStampFiles(oldStampFile string, stampFile string) {
 func checkOptions() {
 	//check filelist exists
 	if _, err := os.Stat(*pathToScan); err != nil {
-		log.Println("co scan path given")
+		log.Println("no scan path given")
 	}
 }
 
@@ -124,24 +124,19 @@ func startScan(rootPath string, updateFile bool) {
 
 		for checkResult := range checkResultChan {
 
-			if *debug && checkResult.result == false {
-				log.Println("Hunter Error:", checkResult.err)
+			if *debug && checkResult.equal == false {
+				log.Println("File change detected:", checkResult.err)
 			}
 
 			info := checkResult.md5Info
 			fileHash := <-(*info).hash
 			fileTextBuffer.WriteString(fmt.Sprintf("%s:%d:%s\n", (*info).filepath, (*info).filesize, fileHash))
-
-			//fmt.Println(fileText)
 		}
-
-		//var fileText string
 	}
 	if updateFile == true && fileTextBuffer.Len() > 0 {
 		rotateStampFiles(OLDSTAMPFILE, STAMPFILE)
 		writeToFile(STAMPFILE, &fileTextBuffer)
 	}
-	//saveToFile(VARDIR + "/newstamp.dat", files)
 }
 
 func readHashfile() <- chan Md5List {
@@ -169,10 +164,8 @@ func readHashfile() <- chan Md5List {
 
 			sizeByte, _ := strconv.ParseInt(size, 10, 64)
 
-			//hashChan
-			go func() {
-				hashChan <- hash
-			}()
+			//send hash to hashChan
+			go func() { hashChan <- hash }()
 
 			fileInfo := Md5Info{filepath:path, filesize: sizeByte, hash: hashChan}
 			md5List = append(md5List, &fileInfo)
@@ -183,6 +176,8 @@ func readHashfile() <- chan Md5List {
 	return md5ListChan
 }
 
+
+// test if path is in ignore list
 func isPathAllowed(path string, patterns *[]string) bool {
 	for _, pattern := range *patterns {
 		re, err := regexp.Compile(pattern)
@@ -190,7 +185,6 @@ func isPathAllowed(path string, patterns *[]string) bool {
 			log.Fatal(err)
 		}
 		if re.MatchString(path) {
-			//log.Printf("%s is not: %s", path, pattern)
 			return false
 		}
 	}
@@ -210,6 +204,7 @@ func checkFilelist(filename string) ([]ScanPath, []string) {
 		return scanList, ignoreList
 	}
 	defer file.Close()
+
 	scanner := bufio.NewScanner(file)
 	fileChan := make(chan ScanPath)
 	ignoreChan := make(chan string)
@@ -244,30 +239,22 @@ func checkFilelist(filename string) ([]ScanPath, []string) {
 //split filelist in files to scan and files to ignore
 func splitFileList(scanPath string, files chan ScanPath, ignores chan string) {
 
-	//re := regexp.MustCompile("(.+);.*i")
-	//matchedIgnores := re.FindStringSubmatch(filePath)
-	//
-	//reFiles := regexp.MustCompile("(.+);(.*r?)")
-	//matchedFiles := reFiles.FindStringSubmatch(filePath)
-
 	split := strings.Split(scanPath, ";")
 
 	if len(split) > 0 {
 		switch {
+		case len(split) == 1 && len(split[0]) > 0 :
+			files <- ScanPath{path: split[0], recursive: false}
 		case strings.Contains(split[1], "i"):
 			ignores <- split[0]
 		case strings.Contains(split[1], "r"):
 			files <- ScanPath{path: split[0], recursive: true}
-		case len(split[0]) > 0 :
-			files <- ScanPath{path: split[0], recursive: false}
 		default:
 			log.Fatal("error reading line in filelist: ", scanPath)
 		}
 	} else {
 		log.Fatal("error parse line", scanPath)
 	}
-
-
 }
 
 // walk through a path an go deep if recursive flag is set
@@ -294,7 +281,7 @@ func scanPath(rootPath string, ignores *[]string, recursive bool) <- chan *Md5In
 				if !info.IsDir() && !fileI.isSymlink()  {
 					fileCount++
 
-					go hashfile(path, info, hashChan)
+					go hashfile(path, hashChan)
 					out <- &Md5Info{filepath:path, filesize: fileI.Size(), hash: hashChan}
 				}
 			} else {
@@ -314,7 +301,7 @@ func scanPath(rootPath string, ignores *[]string, recursive bool) <- chan *Md5In
 }
 
 // hashes the content of a given path and return the result to a channel of string
-func hashfile(scanFilePath string, filePath os.FileInfo, c chan string) {
+func hashfile(scanFilePath string, c chan string) {
 	//Initialize variable returnMD5String now in case an error has to be returned
 	var returnMD5String string
 
@@ -355,7 +342,7 @@ func compareDir(data <-chan *Md5Info, compare *Md5List) <- chan CheckResult {
 		for info := range data {
 			result, checkError := isFileIdentical(info, compare)
 
-			checkResultChan <- CheckResult{md5Info:info, result:result, err: checkError}
+			checkResultChan <- CheckResult{md5Info: info, equal: result, err: checkError}
 		}
 	}()
 

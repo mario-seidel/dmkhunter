@@ -1,4 +1,4 @@
-./;r
+/;r
 #typo3conf/l10n/.*.xlf$;i
 #typo3conf/l10n/.*.xml$;i
 #typo3conf/l10n/.*.zip$;i
@@ -10,4 +10,4 @@
 #piwik/tmp/cache/tracker/eagercache-.*\.php$;i
 #piwik/tmp/templates_c/.*;i
 #piwik/tmp/assets/.*;i
-#typo3temp/.*$;i
+#typo3temp/.*;i
