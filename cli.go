@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 	"os"
-	"dmkhunter"
+	"./dmkhunter"
 )
 
 var (

@@ -3,10 +3,13 @@ package dmkhunter
 import (
 	"testing"
 	"strings"
+	"os"
 )
 
+const FIXTUREFILELIST = "../fixtures/fixture_filelist.txt"
+
 func TestScanPath(t *testing.T) {
-	testfile := "./fixture_filelist.txt"
+	testfile := FIXTUREFILELIST
 	list, ignores := checkFilelist(testfile)
 
 	if len(list) != 1 {
@@ -18,7 +21,7 @@ func TestScanPath(t *testing.T) {
 	}
 
 	for _, val := range list {
-		if !strings.HasSuffix(val.path, "/fixture_filelist.txt") {
+		if !strings.HasSuffix(val.path, FIXTUREFILELIST) {
 			t.Errorf("file is not in list %s", val)
 		}
 		break
@@ -26,7 +29,7 @@ func TestScanPath(t *testing.T) {
 }
 
 func TestMd5Calc(t *testing.T) {
-	testfile := "./fixture_filelist.txt"
+	testfile := FIXTUREFILELIST
 	list, _ := checkFilelist(testfile)
 	ignores := make([]string, 0)
 
@@ -35,7 +38,11 @@ func TestMd5Calc(t *testing.T) {
 
 	md5Info := <-md5list
 
-	if <-md5Info.hash != "a4c37b105d920bae452805cd48575a2a" {
-		t.Errorf("md5 is not correct: %T", md5Info)
+	if <-md5Info.hash != "9fbf3128ce489b0aef2eabfb717b84fe" {
+		t.Errorf("md5 is not correct: %v", md5Info)
+	}
+
+	if fstat, _ := os.Stat(FIXTUREFILELIST); md5Info.filesize != fstat.Size() {
+		t.Errorf("filesize is not correct: %v", md5Info.filesize)
 	}
 }
