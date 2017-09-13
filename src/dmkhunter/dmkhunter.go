@@ -1,4 +1,4 @@
-package main
+package dmkhunter
 
 import "fmt"
 import "os"
@@ -8,21 +8,19 @@ import "log"
 import "crypto/md5"
 import (
 	"encoding/hex"
-	//"io/ioutil"
 	"time"
-	"runtime"
 	"path/filepath"
-	"gopkg.in/alecthomas/kingpin.v2"
 	"regexp"
 	"strings"
 	"strconv"
 	"errors"
 	"bytes"
+	"net/smtp"
 )
 
 const VERSION = "0.0.1"
 const VARDIR = "." //"/var/run/dmkhunter"
-const STAMPFILE = VARDIR + "/stamp.dat"
+const STAMPFILE string = VARDIR + "/stamp.dat"
 const OLDSTAMPFILE = VARDIR + "/oldstamp.dat"
 const LOGFILE = "/var/log/dmkhunter.log"
 const LOCKFILE = "hunt.lock"
@@ -30,85 +28,44 @@ const SENDMAIL = "$( which sendmail 2> /dev/null )"
 const LOGROTATE_EXECUTABLE = "$( which logrotate 2> /dev/null )"
 
 var (
-	pathToScan = kingpin.Arg("path", "root path to scan").Required().String()
-	fileList = kingpin.Flag("file-list", "a list of files to scan for").Short('f').Required().String()
-	updateFlag = kingpin.Flag("update", "a list of files to scan for").Short('u').Bool()
-	debug = kingpin.Flag("debug", "set debug mode").Short('d').Default("false").Bool()
+	fileCount int = 0
+	debug bool = false
 )
 
-var fileCount int = 0
-
+//The md5 info for a file with file size.
 type Md5Info struct {
 	filepath string
 	filesize int64
 	hash     chan string
 }
 
+//List of all MD5 infos.
 type Md5List []*Md5Info
 
+//To extend FileInfo with symlink check func.
 type MyFileinfo struct {
 	os.FileInfo
 }
 
+//Path to scan with recursive info.
 type ScanPath struct {
 	path      string
 	recursive bool
 }
 
+//Result after file has been checked.
 type CheckResult struct {
 	md5Info *Md5Info
 	equal   bool
 	err     error
 }
 
-func main() {
-	//use half CPUs
-	cpuUse := runtime.NumCPU()
-	runtime.GOMAXPROCS(cpuUse)
-	fmt.Println("run on cpu count: ", cpuUse)
-
-	//debug
-	startTime := time.Now()
-
-	//parse commandline arguments
-	kingpin.Parse()
-
-	checkOptions()
-
-	//do the work
-	startScan(*pathToScan, *updateFlag)
-
-	stopTime := time.Since(startTime)
-	log.Printf("runtime: %s", stopTime)
-	log.Printf("hashes: %d", fileCount)
-}
-
-func rotateStampFiles(oldStampFile string, stampFile string) {
-	if _, err := os.Stat(oldStampFile); err != nil {
-		if fileErr := os.Remove(oldStampFile); fileErr != nil && !os.IsNotExist(fileErr) {
-			log.Fatal("error remove " + oldStampFile)
-		}
-	}
-	if _, err := os.Stat(stampFile); err == nil {
-		if fileErr := os.Rename(stampFile, oldStampFile); fileErr != nil {
-			log.Fatal("error move stamp to oldstamp")
-		}
-	}
-}
-
-//test if all parrameters given are correct
-func checkOptions() {
-	//check filelist exists
-	if _, err := os.Stat(*pathToScan); err != nil {
-		log.Println("no scan path given")
-	}
-}
-
-func startScan(rootPath string, updateFile bool) {
-	files, ignores := checkFilelist(*fileList)
+//Start the scan process from a given root path
+func StartScan(rootPath string, updateFile bool, fileList string) {
+	files, ignores := checkFilelist(fileList)
 
 	//read md5 hash list from channel (old stamp file)
-	md5CompareList := <-readHashfile()
+	md5CompareList := <-readHashfile(STAMPFILE)
 	var fileTextBuffer bytes.Buffer
 
 	for _, f := range files {
@@ -124,23 +81,56 @@ func startScan(rootPath string, updateFile bool) {
 
 		for checkResult := range checkResultChan {
 
-			if *debug && checkResult.equal == false {
+			if !updateFile && debug && checkResult.equal == false {
 				log.Println("File change detected:", checkResult.err)
 			}
 
 			info := checkResult.md5Info
 			fileHash := <-(*info).hash
-			fileTextBuffer.WriteString(fmt.Sprintf("%s:%d:%s\n", (*info).filepath, (*info).filesize, fileHash))
+			fileTextBuffer.WriteString(
+				fmt.Sprintf("%s:%d:%s\n", (*info).filepath, (*info).filesize, fileHash))
 		}
 	}
 	if updateFile == true && fileTextBuffer.Len() > 0 {
-		rotateStampFiles(OLDSTAMPFILE, STAMPFILE)
+		//rotateStampFiles(OLDSTAMPFILE, STAMPFILE)
 		writeToFile(STAMPFILE, &fileTextBuffer)
 	}
 }
 
-func readHashfile() <- chan Md5List {
-	sf, err := os.Open(OLDSTAMPFILE)
+func SetDebug(isDebug bool) {
+	debug = isDebug
+}
+
+func GetFilesScanned() int {
+	return fileCount
+}
+
+func init() {
+	//var out, err = os.OpenFile("logdmk.txt", os.O_CREATE | os.O_WRONLY, os.ModePerm | os.ModeAppend)
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	//defer out.Close()
+	//log.SetOutput(out)
+}
+
+//TODO: we dont need to rotate, cause only one stamp file is needed
+func rotateStampFiles(oldStampFile string, stampFile string) {
+	if _, err := os.Stat(oldStampFile); err != nil {
+		if fileErr := os.Remove(oldStampFile); fileErr != nil && !os.IsNotExist(fileErr) {
+			log.Fatal("error remove " + oldStampFile)
+		}
+	}
+	if _, err := os.Stat(stampFile); err == nil {
+		if fileErr := os.Rename(stampFile, oldStampFile); fileErr != nil {
+			log.Fatal("error move stamp to oldstamp")
+		}
+	}
+}
+
+// test if path is in ignore list
+func readHashfile(hashfile string) <- chan Md5List {
+	sf, err := os.Open(hashfile)
 	if err != nil {
 		log.Println(err)
 	}
@@ -155,7 +145,7 @@ func readHashfile() <- chan Md5List {
 		defer close(md5ListChan)
 		for scan.Scan() {
 			line := scan.Text()
-			s := strings.Split(line, ":")
+			s := strings.SplitN(line, ":", 3)
 			if len(s) != 3 {
 				log.Fatal("could not read line from stamp file: ", line)
 			}
@@ -176,8 +166,7 @@ func readHashfile() <- chan Md5List {
 	return md5ListChan
 }
 
-
-// test if path is in ignore list
+//reads a filelist and start scanning all files recursive
 func isPathAllowed(path string, patterns *[]string) bool {
 	for _, pattern := range *patterns {
 		re, err := regexp.Compile(pattern)
@@ -191,7 +180,7 @@ func isPathAllowed(path string, patterns *[]string) bool {
 	return true
 }
 
-//reads a filelist and start scanning all files recursive
+//split filelist in files to scan and files to ignore
 func checkFilelist(filename string) ([]ScanPath, []string) {
 	var scanList []ScanPath
 	var ignoreList []string
@@ -236,7 +225,8 @@ func checkFilelist(filename string) ([]ScanPath, []string) {
 	return scanList, ignoreList
 }
 
-//split filelist in files to scan and files to ignore
+// walk through a path an go deep if recursive flag is set
+// return a channel of Md5Info with the concurrent calculated hash infos
 func splitFileList(scanPath string, files chan ScanPath, ignores chan string) {
 
 	split := strings.Split(scanPath, ";")
@@ -257,8 +247,7 @@ func splitFileList(scanPath string, files chan ScanPath, ignores chan string) {
 	}
 }
 
-// walk through a path an go deep if recursive flag is set
-// return a channel of Md5Info with the concurrent calculated hash infos
+// hashes the content of a given path and return the result to a channel of string
 func scanPath(rootPath string, ignores *[]string, recursive bool) <- chan *Md5Info {
 	//var md5List = Md5List{}
 	out := make(chan *Md5Info)
@@ -286,7 +275,7 @@ func scanPath(rootPath string, ignores *[]string, recursive bool) <- chan *Md5In
 				}
 			} else {
 				//log.Printf("%s is not allowed skip dir %s", path, ignores)
-				//should we skip is ignore pattern match?
+				//should we skip if ignore pattern match?
 				//if f.IsDir() {
 				//	return filepath.SkipDir
 				//}
@@ -300,7 +289,7 @@ func scanPath(rootPath string, ignores *[]string, recursive bool) <- chan *Md5In
 	return out
 }
 
-// hashes the content of a given path and return the result to a channel of string
+// calculate the md5 hash of a file and return the result to a channel
 func hashfile(scanFilePath string, c chan string) {
 	//Initialize variable returnMD5String now in case an error has to be returned
 	var returnMD5String string
@@ -326,13 +315,13 @@ func hashfile(scanFilePath string, c chan string) {
 	c <- returnMD5String
 }
 
-// extenden FileInfo with symlink check
+// compare a Md5Info from a stream with a list of Md5Infos given from the oldstamp file
+// return a channel with the check result streamed to it
 func (f MyFileinfo) isSymlink() bool {
 	return (f.FileInfo.Mode() & os.ModeSymlink) == os.ModeSymlink
 }
 
-// compare a Md5Info from a stream with a list of Md5Infos given from the oldstamp file
-// return a channel with the check result streamed to it
+//saves a map to a file
 func compareDir(data <-chan *Md5Info, compare *Md5List) <- chan CheckResult {
 
 	checkResultChan := make(chan CheckResult)
@@ -340,8 +329,7 @@ func compareDir(data <-chan *Md5Info, compare *Md5List) <- chan CheckResult {
 	go func() {
 		defer close(checkResultChan)
 		for info := range data {
-			result, checkError := isFileIdentical(info, compare)
-
+			result, checkError := checkFileChange(info, compare)
 			checkResultChan <- CheckResult{md5Info: info, equal: result, err: checkError}
 		}
 	}()
@@ -349,9 +337,10 @@ func compareDir(data <-chan *Md5Info, compare *Md5List) <- chan CheckResult {
 	return checkResultChan
 }
 
-//saves a map to a file
+// test if a md5 hash is in oldstamp an is correct
+// returns false if the hash or filesize is not the same an an error with description
 func writeToFile(filePath string, text *bytes.Buffer) {
-	f, err := os.OpenFile(filePath, os.O_RDWR | os.O_APPEND | os.O_CREATE, 0600)
+	f, err := os.OpenFile(filePath, os.O_RDWR | os.O_CREATE, 0600)
 	if err != nil {
 		log.Fatal("could not write file", err)
 	}
@@ -363,19 +352,13 @@ func writeToFile(filePath string, text *bytes.Buffer) {
 	}
 }
 
-// test if a md5 hash is in oldstamp an is correct
-// returns false if the hash or filesize is not the same an an error with description
-func isFileIdentical(info *Md5Info, compareList *Md5List) (bool, error) {
+// compare two Md5Info structs and test md5 hash and filesize
+// return error if not equal
+func checkFileChange(info *Md5Info, compareList *Md5List) (bool, error) {
 
-	fileHash := <-(*info).hash
-	//resend hash, because we need them later
-	go func() {
-		(*info).hash <- fileHash
-	}()
-
-	for _, i := range *compareList {
-		if info.filepath == i.filepath {
-			result := compareFileInfo(info, &fileHash, i)
+	for _, compareFile := range *compareList {
+		if info.filepath == compareFile.filepath {
+			result := compareFileInfo(info, compareFile)
 
 			return (result == nil), result
 		}
@@ -384,21 +367,38 @@ func isFileIdentical(info *Md5Info, compareList *Md5List) (bool, error) {
 	return false, errors.New("new file: " + (*info).filepath)
 }
 
-// compare to Md5Info structs and test hash and filesize
-// return error if not equal
-func compareFileInfo(info *Md5Info, fileHash *string, compare *Md5Info) (checkError error) {
+func compareFileInfo(info *Md5Info, compare *Md5Info) (checkError error) {
+	fileHash := <-(*info).hash
+	//resend hash, because we need them later
+	go func() {
+		(*info).hash <- fileHash
+	}()
 	compareHash := <-compare.hash
 
 	if info.filesize != compare.filesize {
 		checkError = errors.New("filesize is not the same " + (*info).filepath)
-		return
 	}
 
-	if *fileHash != compareHash {
-		checkError = errors.New("hash not the same " + (*info).filepath)
+	if fileHash != compareHash {
+		errString := fmt.Sprintf(
+			"hash diff %s: \n%s<->%s",
+			info.filepath, fileHash, compareHash)
+		checkError = errors.New(errString)
 	}
 
 	return
 }
 
+//TODO: testing
+func sendMail(receiver string, message *string) {
+	auth := smtp.PlainAuth("", "mario", "", "localhost")
 
+	to := []string{receiver}
+	msg := []byte(*message)
+
+	err := smtp.SendMail("localhost:1025", auth, "mario@localhost", to, msg)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+}
