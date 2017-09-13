@@ -1,4 +1,4 @@
-package main
+package dmkhunter
 
 import (
 	"testing"
@@ -18,7 +18,7 @@ func TestScanPath(t *testing.T) {
 	}
 
 	for _, val := range list {
-		if !strings.HasSuffix(val, "/fixture_filelist.txt") {
+		if !strings.HasSuffix(val.path, "/fixture_filelist.txt") {
 			t.Errorf("file is not in list %s", val)
 		}
 		break
@@ -31,7 +31,7 @@ func TestMd5Calc(t *testing.T) {
 	ignores := make([]string, 0)
 
 
-	md5list := scanPath(list[0], &ignores)
+	md5list := scanPath(list[0].path, &ignores, false)
 
 	md5Info := <-md5list
 
