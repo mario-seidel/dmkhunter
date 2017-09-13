@@ -1,4 +1,5 @@
 /;r
+.idea;i
 #typo3conf/l10n/.*.xlf$;i
 #typo3conf/l10n/.*.xml$;i
 #typo3conf/l10n/.*.zip$;i
